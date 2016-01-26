@@ -1,0 +1,575 @@
+//#include <Bounce2.h>
+#include <font5x7.h>
+#include <font8x16.h>
+#include <fontlargenumber.h>
+#include <MicroView.h>
+#include <space01.h>
+#include <space02.h>
+#include <space03.h>
+#include <OneWire.h>
+#include <SimpleTimer.h>
+
+
+//variables for input/output pins
+int snd = A5; //output for buzzer on analog pin 5
+int DS18S20_Pin = 6; //thermometer input signal pin on digital 6
+int UP = A0; //pin for UP button on analog 0
+//Bounce UP_bounce = Bounce();
+int DOWN = A1; //input for DOWN button on analog pin 1
+//Bounce DOWN_bounce = Bounce();
+int LEFT = A3; //input for LEFT button on analog pin 3
+//Bounce LEFT_bounce = Bounce();
+int RIGHT = A2; //input for RIGHT button on analog pin 2
+//Bounce RIGHT_bounce = Bounce();
+int OK = A4; //input for OK button on analog pin 4
+//Bounce OK_bounce = Bounce();
+int SET = 2;
+//Bounce SET_bounce = Bounce();
+
+//other variables
+boolean exitMenu = false;
+int goalTemp = 60; //the default goal temperature
+int newGoalTemp = 0; //temporary holder for new goal temperature while changing setting
+boolean tempReached = false; //to avoid sounding the alarm more than once
+long waitingTime = 350000; //value used in simulating delay() inside a method
+int delayCounter = 0; //value used in simulating delay() inside a method
+SimpleTimer timer; //a timer object for the countdown timer
+int timerID = 0;
+long timerTotalInSeconds = 0;
+int timerMinutes = 4;
+int timerSeconds = 0;
+boolean timerIsOn = false; //boolean to check in the loop if there is a running countdown timer
+boolean showTempScreenOnce = false; //boolean to make the static temperature text update only once (and not every loop), otherwise the temp readings won't show for some strange reason
+boolean noInterrupt = false; //boolean for ignoring the "Set temperature" dialog when in timer mode
+boolean soundOff = false;
+
+OneWire ds(DS18S20_Pin);  // initialize thermometer on digital pin 6
+
+void setup()
+{
+
+  //  UP_bounce.attach(UP);
+  //  UP_bounce.interval(5);
+  //  DOWN_bounce.attach(DOWN);
+  //  DOWN_bounce.interval(5);
+  //  LEFT_bounce.attach(LEFT);
+  //  LEFT_bounce.interval(5);
+  //  RIGHT_bounce.attach(RIGHT);
+  //  RIGHT_bounce.interval(5);
+  //  OK_bounce.attach(OK);
+  //  OK_bounce.interval(5);
+  //  SET_bounce.attach(SET);
+  //  SET_bounce.interval(5);
+
+  attachInterrupt(0, setTemperature, FALLING);
+  timer.disable(timerID);
+  Serial.begin(9600);
+  pinMode(snd, OUTPUT);
+  pinMode(UP, INPUT);
+  pinMode(DOWN, INPUT);
+  pinMode(LEFT, INPUT);
+  pinMode(RIGHT, INPUT);
+  pinMode(OK, INPUT);
+
+  uView.begin();
+  uView.clear(PAGE);
+
+  startMenu(); //show the start menu
+
+}
+
+void loop()
+{
+
+  //updateBouncers();
+
+  if (timerIsOn == true) {
+
+    timer.run();
+
+  } else {
+
+    uView.clear(PAGE);
+    float temperature = getTemp(); //get temperature from the thermometer
+    uView.setCursor(0, 0);
+    uView.print("Now:");
+    uView.setCursor(30, 0);
+    uView.print(temperature);
+    uView.setCursor(0, 40);
+    uView.print("Goal:");
+    uView.setCursor(30, 40);
+    uView.print(goalTemp);
+    uView.display();
+
+  }
+
+}
+
+
+void startMenu() {
+
+  uView.clear(PAGE);
+
+  while (exitMenu == false) {
+
+    uView.setCursor(0, 0);
+    uView.print("-SELECT-");
+    uView.setCursor(0, 15);
+    uView.print("Timer(DWN)");
+    uView.setCursor(0, 25);
+    uView.print("Temp.(UP)");
+    uView.display();
+
+    if (digitalRead(DOWN) == HIGH) {
+      noInterrupt = true;
+      setTimerMinutes();
+      exitMenu = true;
+
+    } else if (digitalRead(UP) == HIGH) {
+
+      //showTempScreen();
+      exitMenu = true;
+    }
+
+  }
+
+
+
+}
+
+void setTimerMinutes() {
+
+  boolean waitToChange = false; //boolean for prevention of value changes while waiting
+
+  uView.clear(PAGE);
+
+  //waiting to avoid too fast reading of DOWN button from previous dialog
+  wait();
+  wait();
+
+  uView.setCursor(0, 40);
+  uView.print(timerMinutes);
+  uView.display();
+
+  while (digitalRead(OK) == HIGH) { //run the enter minutes dialog until the OK button is pressed
+
+    //updateBouncers();
+    enterNewTimerMinutesDialog();
+
+    if (digitalRead(UP) == HIGH && waitToChange == false) {
+
+      waitToChange = true;
+
+      if (timerMinutes >= 9) { //There is NO point in letting your tea steep for more than 9 minutes, that is already waaaaay too long (ok, maybe for some oolongs, but that is yet to be supported)
+        timerMinutes = 9;
+      } else {
+        timerMinutes += 1;
+      }
+
+      uView.setCursor(0, 40);
+      uView.print(timerMinutes);
+      uView.display();
+      wait(); //waiting to avoid too fast changes in value
+
+      waitToChange = false;
+
+    } else if (digitalRead(DOWN) == HIGH && waitToChange == false) {
+
+      waitToChange = true;
+
+      if (timerMinutes <= 0) {
+        timerMinutes = 0;
+      } else {
+        timerMinutes -= 1;
+      }
+
+      uView.setCursor(0, 40);
+      uView.print(timerMinutes);
+      uView.display();
+      wait(); //waiting to avoid too fast changes in value
+
+      waitToChange = false;
+    }
+  }
+
+  timerTotalInSeconds = timerMinutes * 60;
+
+  setTimerSeconds(); //calling the method for setting seconds
+
+}
+
+void enterNewTimerMinutesDialog() {
+  uView.setCursor(0, 0);
+  uView.print("Enter");
+  uView.setCursor(0, 12);
+  uView.print("minutes:");
+  uView.display();
+}
+
+void setTimerSeconds() {
+  boolean waitToChange = false; //boolean for prevention of value changes while waiting
+
+  uView.clear(PAGE);
+
+  //waiting to avoid too fast reading of OK button from previous dialog
+  wait();
+  wait();
+
+  uView.setCursor(0, 40);
+  uView.print(timerSeconds);
+  uView.display();
+
+  while (digitalRead(OK) == HIGH) { //run the enter seconds dialog until the OK button is pressed
+
+    //updateBouncers();
+
+    enterNewTimerSecondsDialog();
+
+    if (digitalRead(UP) == HIGH && waitToChange == false) {
+
+      waitToChange = true;
+
+      if (timerSeconds >= 59) {
+        timerSeconds = 0;
+      } else {
+        timerSeconds += 1;
+      }
+
+      uView.clear(PAGE);
+      enterNewTimerSecondsDialog();
+      uView.setCursor(0, 40);
+      uView.print(timerSeconds);
+      uView.display();
+
+      wait(); //waiting to avoid too fast changes in value
+
+      waitToChange = false;
+
+    } else if (digitalRead(DOWN) == HIGH && waitToChange == false) {
+
+      waitToChange = true;
+
+      if (timerSeconds <= 0) {
+        timerSeconds = 59;
+      } else {
+        timerSeconds -= 1;
+      }
+
+      uView.clear(PAGE);
+      enterNewTimerSecondsDialog();
+      uView.setCursor(0, 40);
+      uView.print(timerSeconds);
+      uView.display();
+
+      wait(); //waiting to avoid too fast changes in value
+      waitToChange = false;
+    }
+
+  }
+
+  setSoundOff();
+
+  timerTotalInSeconds += timerSeconds;
+  timerID = timer.setTimer(1000, doCountDown, timerTotalInSeconds + 1);
+  timer.enable(timerID);
+  timerIsOn = true;
+
+
+}
+
+void enterNewTimerSecondsDialog() {
+  uView.setCursor(0, 0);
+  uView.print("Enter");
+  uView.setCursor(0, 12);
+  uView.print("seconds:");
+  uView.display();
+}
+
+void setSoundOff() {
+
+  boolean waitToChange = false;
+
+  uView.clear(PAGE);
+
+  enterSoundOffDialog();
+  uView.setCursor(0, 40);
+  uView.print("No");
+  uView.display();
+
+  //waiting to avoid too fast reading of OK button from previous dialog
+  wait();
+  wait();
+
+  while (digitalRead(OK) == HIGH) { //run the setSoundOff dialog until the OK button is pressed
+
+    if (digitalRead(UP) == HIGH && waitToChange == false) {
+
+      waitToChange = true;
+
+      soundOff = true;
+
+      enterSoundOffDialog();
+      uView.setCursor(0, 40);
+      uView.print("Yes");
+      uView.display();
+
+      wait();
+
+      waitToChange = false;
+
+    } else if (digitalRead(DOWN) == HIGH && waitToChange == false) {
+
+      waitToChange = true;
+
+      soundOff = false;
+
+      enterSoundOffDialog();
+      uView.setCursor(0, 40);
+      uView.print("No");
+      uView.display();
+
+      wait();
+
+      waitToChange = false;
+
+    }
+
+  }
+
+}
+
+void enterSoundOffDialog() {
+
+  uView.clear(PAGE);
+  uView.setCursor(0, 0);
+  uView.print("Sound");
+  uView.setCursor(0, 12);
+  uView.print("off?");
+  uView.display();
+
+}
+
+void setTemperature() {
+
+  if (noInterrupt == false) {
+
+    boolean waitToChange = false; //boolean for prevention of value changes while waiting
+
+    uView.clear(PAGE);
+
+    if (goalTemp == 0) { //if no previous goal temp has been set
+      newGoalTemp = 60; //default goal value
+    } else {
+      newGoalTemp = goalTemp;
+    }
+
+    while (digitalRead(OK) == HIGH) { //run the menu until the OK button is pressed
+
+      enterNewGoalDialog();
+
+      if (digitalRead(UP) == HIGH && waitToChange == false) {
+        waitToChange = true;
+        if (newGoalTemp >= 99) {
+          newGoalTemp = 99;
+        } else {
+          newGoalTemp += 1;
+        }
+        uView.setCursor(0, 40);
+        lcd.print(newGoalTemp);
+        wait(); //waiting to avoid too fast changes in value
+        waitToChange = false;
+
+      } else if (digitalRead(DOWN) == HIGH && waitToChange == false) {
+        waitToChange = true;
+        if (newGoalTemp <= 0) {
+          newGoalTemp = 0;
+        } else {
+          newGoalTemp -= 1;
+        }
+        uView.setCursor(0, 40);
+        lcd.print(newGoalTemp);
+        wait(); //waiting to avoid too fast changes in value
+        waitToChange = false;
+        //the following two rows are to avoid "ghost digit" if the number of digits are changed, i.e. going from 10 to 9 would otherwise show as 90
+        uView.clear(PAGE); //clearing the screen
+        enterNewGoalDialog(); //showing the input dialog again
+      }
+    }
+
+    goalTemp = newGoalTemp; //accepting the new value as actual goal temperature
+    tempReached = false; //reinitiating the alarm
+    lcd.clear();
+    showTempScreen;
+    showTempScreenOnce = false;
+  }
+
+}
+
+void enterNewGoalDialog() {
+  uView.clear(PAGE);
+  uView.setCursor(0, 0);
+  uView.print("Enter new");
+  uView.setCursor(0,12);
+  uView.print("goal temp:");
+  uView.setCursor(0, 40);
+  uView.print(newGoalTemp);
+  
+}
+
+void doCountDown() {
+
+  //updateBouncers();
+
+  if (timerSeconds < 10) {
+    uView.clear(PAGE);
+    uView.setFontType(3);
+    uView.setCursor(0, 0);
+    uView.print(timerMinutes);
+    uView.setCursor(13, 0);
+    uView.print(":");
+    uView.setCursor(39, 0);
+    uView.print(timerSeconds);
+    uView.setCursor(26, 0);
+    uView.print("0");
+    uView.display();
+  } else {
+
+    uView.clear(PAGE);
+    uView.setFontType(3);
+    uView.setCursor(0, 0);
+    uView.print(timerMinutes);
+    uView.setCursor(10, 0);
+    uView.print(":");
+    uView.setCursor(20, 0);
+    uView.print(timerSeconds);
+    uView.display();
+
+  }
+
+  if (timerMinutes >= 0) {
+
+    if (timerSeconds <= 0) {
+      timerMinutes -= 1;
+      timerSeconds = 59;
+    } else {
+      timerSeconds -= 1;
+    }
+  }
+
+
+  if (timerTotalInSeconds == 0) {
+
+    uView.clear(PAGE);
+    uView.setFontType(1);
+    uView.setCursor(17, 0);
+    uView.print("Time");
+    uView.setCursor(25, 15);
+    uView.print("is");
+    uView.setCursor(23, 30);
+    uView.print("up!");
+    uView.display();
+    uView.setFontType(0);
+
+    while (digitalRead(OK) == HIGH) {
+
+      //  updateBouncers();
+
+      //sound the buzzer and wait for OK button press
+
+      if (soundOff == false) {
+        digitalWrite(snd, HIGH);
+      }
+      wait();
+      if (soundOff == false) {
+        digitalWrite(snd, LOW);
+      }
+      wait();
+      uView.invert(true);
+      if (soundOff == false) {
+        digitalWrite(snd, HIGH);
+      }
+      wait();
+      if (soundOff == false) {
+        digitalWrite(snd, LOW);
+      }
+      wait();
+      uView.invert(false);
+
+    }
+
+    timerIsOn = false;
+    noInterrupt = false;
+    soundOff = false;
+  }
+
+  timerTotalInSeconds -= 1;
+
+}
+
+float getTemp() {
+  //returns the temperature from one DS18S20 in DEG Celsius
+
+  byte data[12];
+  byte addr[8];
+
+  if ( !ds.search(addr)) {
+    //no more sensors on chain, reset search
+    ds.reset_search();
+    return -10;
+  }
+
+  if ( OneWire::crc8( addr, 7) != addr[7]) {
+    Serial.println("CRC is not valid!");
+    return -10;
+  }
+
+  if ( addr[0] != 0x10 && addr[0] != 0x28)
+  {
+    Serial.print("Device is not recognized");
+    return -10;
+  }
+
+  ds.reset();
+  ds.select(addr);
+  ds.write(0x44, 1); // start conversion, with parasite power on at the end
+
+  byte present = ds.reset();
+  ds.select(addr);
+  ds.write(0xBE); // Read Scratchpad
+
+
+  for (int i = 0; i < 9; i++)   // we need 9 bytes
+  {
+    data[i] = ds.read();
+  }
+
+  ds.reset_search();
+
+  byte MSB = data[1];
+  byte LSB = data[0];
+
+  float tempRead = ((MSB << 8) | LSB); //using two's compliment
+  float TemperatureSum = tempRead / 16;
+
+  return TemperatureSum;
+
+}
+
+void wait() {
+  for (int i = 0; i < waitingTime; i++) {
+    while (delayCounter < waitingTime) {
+      delayCounter++;
+    }
+    delayCounter = 0;
+  }
+}
+
+void updateBouncers() {
+  //UP_bounce.update();
+  //DOWN_bounce.update();
+  //LEFT_bounce.update();
+  //RIGHT_bounce.update();
+  //OK_bounce.update();
+  //SET_bounce.update();
+}
+
